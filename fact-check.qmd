@@ -1,0 +1,465 @@
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(sf)
+library(mapview)
+
+#does a standard group_by and count() with percentage
+grouper <- function(input_df, group_by_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = n()) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+}
+
+#group/counts every column in input DataFrame
+group_count <- function(input_df, group_column_name='n()', state_filter=NA, start_col = 1){
+  column_names <- colnames(input_df)
+  if(!is.na(state_filter)){
+    input_df <- input_df %>%
+      filter(state == state_filter)
+  }
+  for (column in column_names[start_col:length(column_names)]){
+    output <- grouper(input_df, column, group_column_name)
+    print(output)
+  }
+}
+
+grouper_sum <- function(input_df, group_by_column, sum_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = sum(.data[[sum_column]])) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+  
+}
+
+#lowers case of every character column in a dataframe
+lower_df <- function(input_df){
+  names <- colnames(input_df)
+  output_df <- input_df
+  names <- colnames(output_df)
+  for (name in names){
+    if (is.character(output_df[[name]])){
+      output_df[[name]] <- tolower(output_df[[name]])
+      #print('yes')
+    } else {
+      output_df[[name]] <- output_df[[name]]
+      #print('no')
+    }
+  }
+  return(output_df)
+}
+
+`%notin%` <- Negate(`%in%`)
+
+```
+
+Download the [data](https://banner-public.s3.amazonaws.com/i-83-camera-data.zip) needed to reproduce this analysis. 
+
+
+# IMPORT
+
+## SHAPES
+
+```{r}
+
+#importing highway shape file
+md_highway_system_sf <- st_read("data/ShapeFiles/MD_Highway_System_SF/Roadway_National_Highway_System__NHS_.shp") %>%
+  st_transform(crs=4326)
+
+#filtering to only include i-83 and buffering to a width that captures to rode in open maps
+i_83_sf <- md_highway_system_sf %>%
+  filter(ID_PREFIX == "IS" & ID_RTE_NO == 83) %>%
+  st_intersection(baltimore) %>%
+  #filtering to increase the width by 30 meters to create an accurate bounding box
+  st_buffer(i_83_sf,dist=1)
+
+mapview(i_83_sf)
+```
+
+## CRASHES
+
+```{R}
+
+#import crashes
+crashes <- read_csv("data/maryland-crash-data.csv") %>%
+  clean_names() %>%
+  mutate(crashdate = mdy(crashdate)) %>%
+  filter(crashdate < mdy("7/1/2023")) %>%
+  distinct(crashdate, latitude, longitude, .keep_all = TRUE) %>%
+  st_as_sf(coords = c("longitude", "latitude"),crs=4326) 
+
+glimpse(crashes)
+
+```
+
+## TICKETS
+
+```{r - Data Load}
+
+#importing open baltimore data
+open_baltimore <- read_csv("data/Parking_and_Moving_Citations.csv") %>%
+  clean_names() %>%
+  mutate(citation = as.double(citation)) %>%
+  lower_df() 
+
+#importing PIA data 
+bal_cit_2017 <- read_xlsx("data/2017.xlsx") %>%
+  lower_df() %>%
+  clean_names() %>%
+  reframe(loc_code = site_id,document_number=NA,citation_number,violation_id=NA,loc_descr=location,model_year=NA,make=NA,model=NA,speed,posted_speed = NA, fine_amount=NA,year = year(issue_date), paid = NA)
+
+bal_cit_2018 <- read_xlsx("data/2018.xlsx") %>%
+  lower_df() %>%
+  clean_names()
+
+bal_cit_2019 <- read_xlsx("data/2019.xlsx") %>%
+  lower_df() %>%
+  clean_names()
+
+bal_cit_2020 <- read_xlsx("data/2020.xlsx") %>%
+  lower_df() %>%
+  clean_names()
+
+bal_cit_2021 <- read_xlsx("data/2021.xlsx") %>%
+  lower_df() %>%
+  clean_names()
+
+bal_cit_2022 <- read_xlsx("data/2022.xlsx") %>%
+  lower_df() %>%
+  clean_names()
+
+bal_cit_2023 <- read_xlsx("data/2023.xlsx") %>%
+  lower_df() %>%
+  clean_names() 
+
+#preparing for join
+pia <- bal_cit_2023 %>%
+  bind_rows(bal_cit_2022, bal_cit_2021, bal_cit_2020, bal_cit_2019, bal_cit_2018, bal_cit_2017) %>%
+  filter(str_detect(loc_descr, "i-83")) %>%
+  mutate(document_number = as.character(document_number)) %>%
+  rename(citation = citation_number) %>%
+  mutate(citation = as.character(citation)) %>%
+  select(citation, loc_descr, model_year, make, speed, posted_speed) %>%
+  rename(description = loc_descr) %>%
+  unique()
+
+#preparing for join
+ob <- open_baltimore %>%
+  filter(description == "interstate 83") %>%
+  select(citation, tag, state, address, description, viol_fine, viol_date, balance) %>%
+  mutate(citation = as.character(citation)) %>%
+  unique()
+
+#joining for matches
+tickets <- ob %>%
+  inner_join(pia, by = ("citation")) %>%
+  mutate(viol_date = ymd_hms(viol_date),
+         viol_time = format(viol_date, "%H:%M:%S"),
+         viol_date = date(viol_date)
+         )
+
+#joining for errors
+failed_ticket_joins <- ob %>%
+  anti_join(pia, by = "citation")
+
+```
+
+### TESTING JOIN FAILURES
+
+```{r}
+
+print(paste0("There are ", nrow(failed_ticket_joins), " tickets that we do not have speeds for. That is a ", round((nrow(failed_ticket_joins)/nrow(open_baltimore))*100, 2), "% failure rate." ))
+
+#sorry about assaulting your memory
+rm(bal_cit_2023, bal_cit_2022, bal_cit_2021, bal_cit_2020, bal_cit_2019, bal_cit_2018, bal_cit_2017, open_baltimore, pia, ob)
+
+```
+
+# INTERSECTION
+
+```{r}
+
+#find crashes that interesect with the road
+i_83_crashes <- st_intersection(crashes, i_83_sf) %>%
+  clean_names() %>%
+  select(reportnumber, crashdate, reporttype, road_name)
+
+#creating point 41 overpass is, which is near where each camera is
+i_83_camera_point <- data.frame(c("Lat","Long"),c(39.33485318725414, -76.64459970691271)) %>%
+  clean_names() %>%
+  pivot_wider(names_from = c_lat_long, values_from = c_39_3348531872541_76_6445997069127) %>%
+  st_as_sf(coords = c("Long", "Lat"), crs=4326)
+
+#calculating distances from the cameras
+distances <- as.data.frame(as.vector(st_distance(i_83_camera_point, i_83_crashes))) %>%
+  clean_names() %>%
+  rename(distances_from_camera = as_vector_st_distance_i_83_camera_point_i_83_crashes)
+
+#calculating if point is north or south of the camera
+centroids <- st_coordinates(st_centroid(i_83_crashes))
+camera_coords <- st_coordinates(i_83_camera_point)[1,]
+
+#calculating direction of road in reference to camera
+direction <- ifelse(centroids[, "Y"] > camera_coords["Y"], "North", "South") %>%
+  as.vector() %>%
+  as.data.frame() %>%
+  clean_names() %>%
+  rename(direction = x)
+
+##binding distances to original database
+i_83_crashes_with_distances <- i_83_crashes %>%
+  cbind(distances, direction) %>%
+  #converting from metres to 
+  mutate(distances_from_camera_in_miles = distances_from_camera/1609.34) %>%
+  #creating bins for distances away
+  mutate(distance_bin_in_miles = case_when(
+    distances_from_camera_in_miles < 1 ~ 1,
+    distances_from_camera_in_miles < 2 & distances_from_camera_in_miles > 1 ~ 2,
+    distances_from_camera_in_miles < 3 & distances_from_camera_in_miles > 2 ~ 3,
+    distances_from_camera_in_miles < 4 & distances_from_camera_in_miles > 3 ~ 4,
+    distances_from_camera_in_miles < 5 & distances_from_camera_in_miles > 4 ~ 5,
+    distances_from_camera_in_miles < 6 & distances_from_camera_in_miles > 5 ~ 6,
+    distances_from_camera_in_miles < 7 & distances_from_camera_in_miles > 6 ~ 7,
+    distances_from_camera_in_miles < 8 & distances_from_camera_in_miles > 7 ~ 8,
+    distances_from_camera_in_miles < 9 & distances_from_camera_in_miles > 8 ~ 9,
+  )) %>%
+  mutate(month = ymd(paste(year(crashdate), month(crashdate), "01", sep = "-"))) %>%
+  mutate(distance_bin_with_direction = paste(distance_bin_in_miles, direction))
+
+#quick viz to check for weird
+mapview(i_83_crashes_with_distances, zcol = "distance_bin_with_direction") +
+  mapview(i_83_camera_point, col.regions = "red")
+
+```
+
+```{r}
+
+crashes_by_distance_bin_by_month <- i_83_crashes_with_distances %>%
+  st_drop_geometry() %>%
+  group_by(distance_bin_with_direction, month) %>%
+  count() %>%
+  pivot_wider(values_from = n, names_from = distance_bin_with_direction)
+
+
+
+i_83_crashes_with_distances %>%
+  st_drop_geometry() %>%
+  group_by(distance_bin_with_direction, distance_bin_in_miles) %>%
+  summarise(maximum_distance = max(distances_from_camera_in_miles)) %>%
+  mutate(math_distance = round(maximum_distance -  (distance_bin_in_miles-1), 2))
+
+```
+
+# BY-MILE VIZ
+
+```{r}
+
+#calculating max distance for each bin to see the accident rate per hundreth of mile
+crashes_by_distance_bin_per_hundreth_of_mile <- i_83_crashes_with_distances %>%
+  st_drop_geometry() %>%
+  mutate(year = year(month)) %>%
+  ungroup() %>%
+  mutate(quarter = case_when(
+    month(month) %in% c(1,2,3) ~ ymd(paste(year, "1", "1", sep = "-")),
+    month(month) %in% c(4,5,6) ~ ymd(paste(year, "4", "1", sep = "-")),
+    month(month) %in% c(7,8,9) ~ ymd(paste(year, "7", "1", sep = "-")),
+    month(month) %in% c(10,11,12) ~ ymd(paste(year, "10", "1", sep = "-")),
+    TRUE ~ NA
+  )) %>%
+  group_by(distance_bin_with_direction, distance_bin_in_miles, quarter) %>%
+  summarise(accidents = n(),
+            maximum_distance = max(distances_from_camera_in_miles))  %>%
+  mutate(math_distance = round(maximum_distance -  (distance_bin_in_miles-1), 2)) %>%
+  select(distance_bin_with_direction, distance_bin_in_miles, quarter, accidents, math_distance) %>%
+  mutate(math_distance = case_when(
+    math_distance > .97 ~ 1, 
+    TRUE ~ math_distance
+  )) %>%
+  mutate(accidents_per_hundreth_of_mile = accidents/math_distance) %>%
+  ungroup()
+
+#quick viz
+ggplot(crashes_by_distance_bin_per_hundreth_of_mile, aes(x=quarter, y=accidents_per_hundreth_of_mile, group = distance_bin_with_direction)) +
+  geom_line()
+
+#pivoting to datawrapper
+temp_output <- crashes_by_distance_bin_per_hundreth_of_mile %>%
+  select(quarter, distance_bin_with_direction, accidents_per_hundreth_of_mile) %>%
+  pivot_wider(values_from = accidents_per_hundreth_of_mile, names_from = distance_bin_with_direction)
+
+#removing NAs
+temp_output[is.na(temp_output)] <- 0
+
+#write_csv(temp_output, "data/ryan-output/crashes-by-distance-bin-per-hundreth-of-mile.csv")
+
+```
+
+# FACTCHECK
+
+"More than a year after Baltimore City Department of Transportation officials flipped the switch on two new speed cameras on Interstate 83, car crashes have significantly decreased, a Baltimore Banner data analysis found."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  filter(distance_bin_in_miles == 1) %>%
+  ggplot(aes(x=quarter, y=accidents_per_hundreth_of_mile)) +
+  geom_line()
+
+```
+
+"The city’s I-83 speed camera initiative, which kicked off last year in an effort to slow down drivers on their way in and out of the city, already had shown some early anecdotal success at reducing speeds in those areas. Fewer tickets have been issued than city officials expected."
+
+```{r}
+
+tickets_by_month <- tickets %>%
+  mutate(month = ymd(paste(year(viol_date), month(viol_date), 1, sep="-"))) %>%
+  group_by(month) %>%
+  summarise(tickets = n(),
+            average_speed = mean(speed)
+            )
+
+tickets_by_month %>%
+  ggplot(aes(x=month, y=tickets)) +
+  geom_line()
+
+```
+
+"However, The Banner’s analysis of state vehicle crash data and the city’s citations shows the number of crashes has dropped significantly since March, when transportation officials first installed the two cameras."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  filter(distance_bin_in_miles == 1,
+         year(quarter) > 2021) %>%
+  ggplot(aes(x=quarter, y=accidents_per_hundreth_of_mile)) +
+  geom_line()
+
+```
+
+"The Banner found that crashes dropped by a third in the three months after the cameras were installed compared to the three prior months."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  filter(distance_bin_in_miles == 1) %>%
+  ungroup() %>%
+  group_by(distance_bin_in_miles, quarter) %>%
+  summarise(accidents = sum(accidents)) %>%
+  filter(quarter %in% c(ymd("2022-01-01"), ymd("2022-04-01"), ymd("2022-07-01")))
+
+```
+
+"The Banner found that crashes on I-83 in Baltimore are down overall since the cameras were installed, especially in the stretch of road within a mile of the cameras."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  filter(distance_bin_in_miles == 1) %>%
+  ungroup() %>%
+  group_by(distance_bin_in_miles, quarter) %>%
+  summarise(accidents = sum(accidents)) %>%
+  filter(quarter >= ymd("2022-01-01"))
+
+
+```
+
+"Accidents within one mile in either direction of the cameras have historically occurred at rates similar to the rest of the city’s stretch of the expressway."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  ungroup() %>%
+  group_by(distance_bin_in_miles, quarter) %>%
+  summarise(accidents = sum(accidents),
+            math_distance = sum(math_distance)) %>%
+  mutate(accidents_per_distance = accidents/math_distance) %>%
+  filter(quarter < ymd("2022-01-01")) %>%
+  mutate(distance_bin_in_miles = as.character(distance_bin_in_miles)) %>%
+  ggplot(aes(x=quarter, y=accidents_per_distance, group=distance_bin_in_miles, colour=distance_bin_in_miles)) +
+  geom_line()
+
+```
+
+"Now those two miles have some of the lowest rates."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  ungroup() %>%
+  group_by(distance_bin_in_miles, quarter) %>%
+  summarise(accidents = sum(accidents),
+            math_distance = sum(math_distance)) %>%
+  mutate(accidents_per_distance = accidents/math_distance) %>%
+  filter(quarter >= ymd("2022-01-01")) %>%
+  mutate(distance_bin_in_miles = as.character(distance_bin_in_miles)) %>%
+  ggplot(aes(x=quarter, y=accidents_per_distance, group=distance_bin_in_miles, colour=distance_bin_in_miles)) +
+  geom_line()
+
+```
+
+"The drop is even lower in recent months, though lag in the reporting of the most serious accidents means those counts will likely turn out to be higher when every crash has been reported."
+
+```{r}
+
+crashes_by_distance_bin_per_hundreth_of_mile %>%
+  ungroup() %>%
+  group_by(distance_bin_in_miles, quarter) %>%
+  summarise(accidents = sum(accidents),
+            math_distance = sum(math_distance)) %>%
+  mutate(accidents_per_distance = accidents/math_distance) %>%
+  filter(quarter >= ymd("2022-01-01")) %>%
+  mutate(distance_bin_in_miles = as.character(distance_bin_in_miles)) %>%
+  ggplot(aes(x=quarter, y=accidents_per_distance, group=distance_bin_in_miles, colour=distance_bin_in_miles)) +
+  geom_line()
+
+```
+
+"Another reason to be skeptical on the camera’s impact: the speeds drivers are getting clocked at have barely budged. On average, drivers are getting ticketed around the 65 mph mark, plus or minus a few decimal points."
+
+```{r}
+
+max(tickets_by_month$average_speed) - min(tickets_by_month$average_speed)
+
+```
+
+"Overall, citation speeds have only fallen about 0.3 mph since speeding cameras were activated in July 2022, The Banner’s analysis found."
+
+```{r}
+
+ggplot(tickets_by_month, aes(x=month, y=average_speed)) +
+  geom_line()
+```
+
+```{r}
+
+ggplot(tickets_by_month, aes(x=month, y=tickets)) +
+  geom_line()
+
+#write_csv(tickets_by_month, "data/ryan-output/tickets-by-month.csv")
+
+```
+
+"Speeding citations peaked in August 2020 when about 40,000 tickets were issued. Only about 24,000 were issued in June 2023, the most recent month The Banner has complete data for."
+
+```{r}
+
+tickets_by_month %>%
+  filter(month == ymd("2022-08-01") | month == ymd("2023-06-01"))
+
+```
+
+```{r}
+
+max(tickets$viol_date)
+
+```
