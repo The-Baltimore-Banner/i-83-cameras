@@ -72,6 +72,12 @@ Download the [data](https://banner-public.s3.amazonaws.com/i-83-camera-data.zip)
 
 ```{r}
 
+#import police districts and make a shapefile of baltimore city
+baltimore <- read_sf("data/ShapeFiles/Police_Districts/Police_Districts.shp") %>%
+          st_transform(crs = 4326) %>%
+          group_by(.) %>%
+          summarise(geogmetry = st_union(geometry))
+
 #importing highway shape file
 md_highway_system_sf <- st_read("data/ShapeFiles/MD_Highway_System_SF/Roadway_National_Highway_System__NHS_.shp") %>%
   st_transform(crs=4326)
@@ -81,7 +87,7 @@ i_83_sf <- md_highway_system_sf %>%
   filter(ID_PREFIX == "IS" & ID_RTE_NO == 83) %>%
   st_intersection(baltimore) %>%
   #filtering to increase the width by 30 meters to create an accurate bounding box
-  st_buffer(i_83_sf,dist=1)
+  st_buffer(i_83_sf,dist=30)
 
 mapview(i_83_sf)
 ```
@@ -97,8 +103,6 @@ crashes <- read_csv("data/maryland-crash-data.csv") %>%
   filter(crashdate < mdy("7/1/2023")) %>%
   distinct(crashdate, latitude, longitude, .keep_all = TRUE) %>%
   st_as_sf(coords = c("longitude", "latitude"),crs=4326) 
-
-glimpse(crashes)
 
 ```
 
@@ -193,6 +197,49 @@ rm(bal_cit_2023, bal_cit_2022, bal_cit_2021, bal_cit_2020, bal_cit_2019, bal_cit
 i_83_crashes <- st_intersection(crashes, i_83_sf) %>%
   clean_names() %>%
   select(reportnumber, crashdate, reporttype, road_name)
+
+```
+
+#FILTER FOR ONLY I-83 CRASHES
+
+```{r}
+
+#saving before fixing
+old_i_83_crashes <- i_83_crashes
+
+#building list of crashes that are not i83
+not_i_83_crashes <- i_83_crashes %>%
+  mutate(road_name = str_to_lower(road_name)) %>%
+  filter(!str_detect(road_name, "i83|i-83|i 83|jones|83 |interstate 83|83n|83s|jfx|i *3|i -82 southbound|intersatate 83| 83 |82 north|8s n|south 83"))
+
+#building list of crashes that are i83
+i_83_crashes_filtered <- i_83_crashes %>%
+  mutate(road_name = str_to_lower(road_name)) %>%
+  filter(str_detect(road_name, "i83|i-83|i 83|jones|83 |interstate 83|83n|83s|jfx|i *3|i -82 southbound|intersatate 83| 83 |82 north|8s n|south 83"))
+
+#roads that have no names
+no_road_names <- i_83_crashes %>%
+  filter(reportnumber %notin% not_i_83_crashes$reportnumber) %>%
+  filter(reportnumber %notin% i_83_crashes_filtered$reportnumber)
+
+i_83_crashes <- i_83_crashes_filtered
+
+```
+
+#CORRECTION ANALYSIS
+
+```{r}
+
+#Our original story inadvertently counted 543 crashes that were not in I-83. It was about 22% of the crashes we were counting. This error was introduced during fact checking. The corrected data analysis strengthens the findings in the story. 
+
+nrow(not_i_83_crashes)
+nrow(not_i_83_crashes)/nrow(old_i_83_crashes)
+
+```
+
+# CALCULATE DISTANCES
+
+```{R}
 
 #creating point 41 overpass is, which is near where each camera is
 i_83_camera_point <- data.frame(c("Lat","Long"),c(39.33485318725414, -76.64459970691271)) %>%
@@ -310,9 +357,18 @@ temp_output[is.na(temp_output)] <- 0
 
 ```{r}
 
-crashes_by_distance_bin_per_hundreth_of_mile %>%
-  filter(distance_bin_in_miles == 1) %>%
-  ggplot(aes(x=quarter, y=accidents_per_hundreth_of_mile)) +
+i_83_crashes %>%
+  mutate(quarter = case_when(
+    month(crashdate) %in% c(1,2,3) ~ ymd(paste(year(crashdate), "1", "1", sep = "-")),
+    month(crashdate) %in% c(4,5,6) ~ ymd(paste(year(crashdate), "4", "1", sep = "-")),
+    month(crashdate) %in% c(7,8,9) ~ ymd(paste(year(crashdate), "7", "1", sep = "-")),
+    month(crashdate) %in% c(10,11,12) ~ ymd(paste(year(crashdate), "10", "1", sep = "-")),
+    TRUE ~ NA_Date_
+  )) %>%
+  st_drop_geometry() %>%
+  group_by(quarter) %>%
+  count() %>%
+  ggplot(aes(x=quarter, y=n)) +
   geom_line()
 
 ```
@@ -341,14 +397,18 @@ tickets_by_month %>%
 crashes_by_distance_bin_per_hundreth_of_mile %>%
   filter(distance_bin_in_miles == 1,
          year(quarter) > 2021) %>%
-  ggplot(aes(x=quarter, y=accidents_per_hundreth_of_mile)) +
+  arrange(quarter) %>%
+  ggplot(aes(x=quarter, y=accidents_per_hundreth_of_mile, group = distance_bin_with_direction)) +
   geom_line()
 
 ```
 
-"The Banner found that crashes dropped by a third in the three months after the cameras were installed compared to the three prior months."
+
+"The Banner found that crashes dropped by half in the three months after the cameras were installed compared to the three prior months."
 
 ```{r}
+
+#This finding was corrected from the previous version. We had initially reported that the number of crashes dropped by a third. It was actually a half.
 
 crashes_by_distance_bin_per_hundreth_of_mile %>%
   filter(distance_bin_in_miles == 1) %>%
@@ -458,8 +518,6 @@ tickets_by_month %>%
 
 ```
 
-```{r}
 
-max(tickets$viol_date)
 
-```
+
