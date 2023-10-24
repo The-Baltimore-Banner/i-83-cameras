@@ -5,6 +5,7 @@ This repository includes all of the code and methodology needed to reproduce The
 - [Overview](#overview)
 - [Methodology](#methodology)
 - [Limitations](#limitations)
+- [Correction](#correction)
 - [License](#license)
 
 ---
@@ -46,6 +47,12 @@ There are known errors in the way the Maryland State Police collect and report c
 There is a lag in the reporting of the most serious crashes. Crashes that were complex or resulted in a fatality often take much longer to investigate. Only crashes that have a complete investigation are included in the data. Counts of the most recent crashes are, therefore, likely incomplete. The Banner has noted this in the story and intends to revisit this analysis after more time has passed.
 
 Sometimes, the listed road does not match the point listed in the Maryland crash database. The Banner only counted crashes that both identified I-83 or the Jones Falls Expressway as the road where the crash occurred and when the listed latitude and longitude show a position on the expressway. Points that were excluded appear to be far away from the road or to have happened on ramps on and off the highway.
+
+<a id="correction"></a>
+
+## Correction
+
+An earlier version of this analysis inadvertantly included 543 crashes that did not occurr on I-83. This error was introduced during fact checking. The error did not diminished the strength of the analysis. When only including crashes that list I-83 as the road and have latitude and longitude locations that intersect with the road, the decrease in crashes near the speed cameras is actually larger than we originally reported.
 
 ---
 
