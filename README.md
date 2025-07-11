@@ -21,7 +21,7 @@ However, The Banner’s analysis of state vehicle-crash data and the city’s ci
 
 Read the story: [A year into speed cameras program, I-83 crashes are down](https://www.thebaltimorebanner.com/community/transportation/interstate-83-speed-cameras-analysis-AZIOHN64TRHPJD6TEB2HL2JFTU/)
 
-Download the [data](https://banner-public.s3.amazonaws.com/i-83-camera-data.zip) needed to reproduce this analysis. 
+Download the [data]([https://banner-public.s3.amazonaws.com/i-83-camera-data.zip](https://tbb-public.s3.us-east-1.amazonaws.com/data-share/i-83-camera-data.zip)) needed to reproduce this analysis. 
 ---
 
 <a id="methodology"></a>
